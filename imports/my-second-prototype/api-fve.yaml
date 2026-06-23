@@ -1,0 +1,413 @@
+openapi: 3.1.0
+
+info:
+  title: PREdistribuce – Detail OM / Vlastní výroba (FVE)
+  version: "1.0.0"
+  description: |
+    API pro sekci "Vlastní výroba – FVE" na stránce Detail odběrného místa.
+
+    ## Návrh: 2 endpointy
+
+    Sekce se skládá ze dvou logicky oddělených bloků:
+
+    1. **Parametry výrobního OM** (`GET /om/{ean}/vyroba`)
+       Smluvní a technické parametry připojení výrobny – typ OM, smlouva,
+       kategorie měření, datum registrace na OTE, dodavatel atd.
+       Tato data se mění málo (změna smlouvy, změna dodavatele) a mohou být
+       cachována na delší dobu.
+
+    2. **Části výrobny** (`GET /om/{ean}/vyroba/zarizeni`)
+       Kolekce zařízení přiřazených k výrobnímu OM – bateriová úložiště (ZUE)
+       i výrobní jednotky (FVE panely) jsou rozlišeny polem `typ` v rámci
+       jedné kolekce, protože sdílejí stejnou datovou strukturu.
+
+    ### Proč ne 3 endpointy (ZUE zvlášť, výroba zvlášť)?
+    Separace ZUE a výrobních zařízení do samostatných endpointů by byla vhodná
+    pouze pokud tato data pocházejí z různých backend systémů nebo domén.
+    Pokud jsou uložena v jednom systému, je čistší jedno volání s typovým
+    rozlišením – méně round-tripů, jednodušší error handling na frontendu.
+
+    ### Proč ne 1 endpoint?
+    - Zařízení v accordionu lze načítat lazy (až při rozkliknutí), čímž se
+      šetří přenesená data při prvním zobrazení stránky.
+    - Parametry výrobního OM a seznam zařízení mají různý refresh interval –
+      parametry smlouvy jsou stabilní, stavy zařízení se mohou měnit častěji.
+    - Zodpovědnost za data může ležet v různých mikroslužbách i bez nutnosti
+      fyzicky oddělených systémů.
+
+    ### Společné předpoklady
+    - Všechny endpointy jsou **read-only (GET)** – data jsou na portálu
+      zobrazena pouze ke čtení.
+    - Identifikátorem odběrného místa je **EAN** (18místné číslo).
+    - Autentizace probíhá přes Bearer token (OAuth 2.0 / OIDC).
+
+servers:
+  - url: https://api.predistribuce.cz/portal/v1
+    description: Produkce
+  - url: https://api-test.predistribuce.cz/portal/v1
+    description: Testovací prostředí
+
+tags:
+  - name: Výroba
+    description: Parametry výrobního odběrného místa a jeho zařízení
+
+security:
+  - bearerAuth: []
+
+paths:
+
+  /om/{ean}/vyroba:
+    get:
+      tags: [Výroba]
+      operationId: getOmVyroba
+      summary: Parametry výrobního OM
+      description: |
+        Vrací smluvní a technické parametry výrobního odběrného místa
+        (horní blok sekce "Vlastní výroba – FVE").
+
+        Pokud dané OM nemá připojenu výrobnu, vrátí server `404`.
+        Frontend na základě tohoto volání rozhodne, zda sekci FVE vůbec zobrazit.
+      parameters:
+        - $ref: '#/components/parameters/EanPath'
+      responses:
+        "200":
+          description: Parametry výrobního OM nalezeny.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VyrobaParametry'
+              example:
+                ean_spotreba: "859182400123456789"
+                ean_vyroba:   "859182400123456788"
+                rezervovany_vykon_kw: 5.5
+                stav_smlouvy: AKTIVNI
+                typ_om: VYROBNA_ELEKTRINY
+                typ_smlouvy: SMLOUVA_O_PRIPOJENI_VYROBNY
+                kategorie_mereni: A
+                typ_mereni: PRUBEHOVE
+                typ_faktury: CTVRTLETNI
+                datum_registrace_ote: "2023-03-15"
+                odpov_za_odchylku: false
+                dodavatel:
+                  nazev: "Pražská energetika a.s."
+                  ico: "60193913"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "500":
+          $ref: '#/components/responses/ServerError'
+
+  /om/{ean}/vyroba/zarizeni:
+    get:
+      tags: [Výroba]
+      operationId: getOmVyrobaZarizeni
+      summary: Části výrobny (zařízení)
+      description: |
+        Vrací seznam zařízení přiřazených k výrobnímu OM – bateriová úložiště
+        (typ `ZUE`) i výrobní jednotky (typ `VYROBA`) v jedné kolekci.
+
+        Volání je vhodné provést lazy – až při rozbalení accordionu "Části výrobny",
+        nikoliv při prvním načtení stránky.
+
+        Pořadí záznamů v odpovědi určuje pořadí zobrazení v UI.
+      parameters:
+        - $ref: '#/components/parameters/EanPath'
+      responses:
+        "200":
+          description: Seznam zařízení výrobny.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ZarizeniList'
+              example:
+                ean_vyroba: "859182400200000022"
+                zarizeni:
+                  - id: "ZUE-0042"
+                    typ: ZUE
+                    nazev: "Zařízení pro ukládání elektřiny (ZUE)"
+                    druh: "Bateriové úložiště"
+                    vykon_stridace_kw: 5.0
+                    kapacita_kwh: 10.0
+                    stav: AKTIVNI
+                  - id: "FVE-0017"
+                    typ: VYROBA
+                    poradi: 1
+                    nazev: "Zařízení pro výrobu elektřiny I."
+                    druh: "Fotovoltaická elektrárna (FVE)"
+                    vykon_stridace_kw: 8.4
+                    kapacita_kwh: null
+                    stav: AKTIVNI
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "500":
+          $ref: '#/components/responses/ServerError'
+
+components:
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Bearer token získaný přihlášením uživatele přes OIDC provider.
+        Token musí obsahovat claim `sub` (ID uživatele) a `om_ean` (seznam EANů,
+        ke kterým má uživatel přístup) pro autorizaci na úrovni záznamu.
+
+  parameters:
+    EanPath:
+      name: ean
+      in: path
+      required: true
+      description: EAN spotřebního odběrného místa (18 číslic).
+      schema:
+        type: string
+        pattern: '^\d{18}$'
+        example: "859182400123456789"
+
+  schemas:
+
+    VyrobaParametry:
+      type: object
+      description: Smluvní a technické parametry výrobního OM.
+      required:
+        - ean_spotreba
+        - ean_vyroba
+        - rezervovany_vykon_kw
+        - stav_smlouvy
+        - typ_om
+        - typ_smlouvy
+        - kategorie_mereni
+        - typ_mereni
+        - typ_faktury
+        - datum_registrace_ote
+        - odpov_za_odchylku
+        - dodavatel
+      properties:
+        ean_spotreba:
+          type: string
+          pattern: '^\d{18}$'
+          description: EAN spotřebního (odběrného) místa.
+          example: "859182400123456789"
+        ean_vyroba:
+          type: string
+          pattern: '^\d{18}$'
+          description: EAN výrobního místa přiřazeného k danému OM.
+          example: "859182400123456788"
+        rezervovany_vykon_kw:
+          type: number
+          format: float
+          description: Rezervovaný výkon výrobny v kW.
+          example: 5.5
+        stav_smlouvy:
+          $ref: '#/components/schemas/StavSmlouvy'
+        typ_om:
+          $ref: '#/components/schemas/TypOM'
+        typ_smlouvy:
+          $ref: '#/components/schemas/TypSmlouvy'
+        kategorie_mereni:
+          type: string
+          description: Kategorie měření dle ERÚ (A, B, C).
+          enum: [A, B, C]
+          example: A
+        typ_mereni:
+          type: string
+          description: Způsob odečtu elektroměru.
+          enum: [PRUBEHOVE, JEDNOSAZBOVE]
+          example: PRUBEHOVE
+        typ_faktury:
+          type: string
+          description: Frekvence fakturace distribučních služeb.
+          enum: [MESICNI, CTVRTLETNI, ROCNI]
+          example: CTVRTLETNI
+        datum_registrace_ote:
+          type: string
+          format: date
+          description: Datum registrace výrobce na OTE (v systému CDS).
+          example: "2023-03-15"
+        odpov_za_odchylku:
+          type: boolean
+          description: |
+            Indikuje, zda zákazník převzal odpovědnost za odchylku.
+            false = odpovědnost nese obchodník / dodavatel.
+          example: false
+        dodavatel:
+          $ref: '#/components/schemas/Dodavatel'
+
+    ZarizeniList:
+      type: object
+      required:
+        - ean_vyroba
+        - zarizeni
+      properties:
+        ean_vyroba:
+          type: string
+          pattern: '^\d{18}$'
+          description: EAN výrobního místa, ke kterému zařízení patří.
+          example: "859182400200000022"
+        zarizeni:
+          type: array
+          description: |
+            Seřazený seznam zařízení výrobny. Pořadí v poli odpovídá pořadí
+            zobrazení v UI (accordion). ZUE jsou zpravidla na prvním místě.
+          items:
+            $ref: '#/components/schemas/Zarizeni'
+
+    Zarizeni:
+      type: object
+      description: |
+        Jedno zařízení části výrobny. Typ `ZUE` = bateriové úložiště,
+        typ `VYROBA` = výrobní jednotka (FVE, kogenerace apod.).
+      required:
+        - id
+        - typ
+        - nazev
+        - druh
+        - vykon_stridace_kw
+        - stav
+      properties:
+        id:
+          type: string
+          description: Interní identifikátor zařízení v backend systému.
+          example: "FVE-0017"
+        typ:
+          type: string
+          description: |
+            Druh zařízení:
+            - `ZUE` – Zařízení pro ukládání elektřiny (baterie)
+            - `VYROBA` – Zařízení pro výrobu elektřiny (FVE, kogenerace…)
+          enum: [ZUE, VYROBA]
+          example: VYROBA
+        poradi:
+          type: integer
+          description: |
+            Pořadové číslo v rámci typu (pro pojmenování "I.", "II." v UI).
+            Přítomno pouze u typu `VYROBA`.
+          example: 1
+          nullable: true
+        nazev:
+          type: string
+          description: Zobrazovaný název zařízení (použit jako titulek accordionu).
+          example: "Zařízení pro výrobu elektřiny I."
+        druh:
+          type: string
+          description: Textový popis druhu technologie (číselník SAP v SoP).
+          example: "Fotovoltaická elektrárna (FVE)"
+        vykon_stridace_kw:
+          type: number
+          format: float
+          description: |
+            Instalovaný výkon střídače / střídačů v kW.
+            Pro FVE se uvádí jako kWp.
+          example: 8.4
+        kapacita_kwh:
+          type: number
+          format: float
+          nullable: true
+          description: |
+            Kapacita úložiště v kWh. Relevantní pouze pro `ZUE`.
+            Pro výrobní zařízení bez akumulace je `null`.
+          example: 10.0
+        stav:
+          type: string
+          description: Provozní stav zařízení.
+          enum: [AKTIVNI, NEAKTIVNI, V_REALIZACI, VYRAZENO]
+          example: AKTIVNI
+
+    Dodavatel:
+      type: object
+      description: Dodavatel elektřiny přiřazený k výrobnímu OM.
+      required: [nazev]
+      properties:
+        nazev:
+          type: string
+          description: Obchodní název dodavatele.
+          example: "Pražská energetika a.s."
+        ico:
+          type: string
+          description: IČO dodavatele (nemusí být vždy dostupné).
+          example: "60193913"
+          nullable: true
+
+    StavSmlouvy:
+      type: string
+      description: Stav smlouvy o připojení výrobny.
+      enum: [AKTIVNI, POZASTAVENA, UKONCENA, V_REALIZACI]
+      example: AKTIVNI
+
+    TypOM:
+      type: string
+      description: Typ výrobního odběrného místa.
+      enum: [VYROBNA_ELEKTRINY, KOMBINOVANA_VYROBA_SPOTREBA]
+      example: VYROBNA_ELEKTRINY
+
+    TypSmlouvy:
+      type: string
+      description: Typ smluvního vztahu pro připojení výrobny.
+      enum: [SMLOUVA_O_PRIPOJENI_VYROBNY, DODATEK_KE_SMLOUVE]
+      example: SMLOUVA_O_PRIPOJENI_VYROBNY
+
+    ApiError:
+      type: object
+      required: [kod, zprava]
+      properties:
+        kod:
+          type: string
+          description: Strojově čitelný kód chyby.
+          example: "OM_NOT_FOUND"
+        zprava:
+          type: string
+          description: Lidsky čitelný popis chyby (pro logování, ne pro UI).
+          example: "Odběrné místo s daným EAN nebylo nalezeno."
+        detail:
+          type: string
+          description: Volitelný doplňující kontext (pouze pro debug/test prostředí).
+          nullable: true
+
+  responses:
+    NotFound:
+      description: |
+        Záznam nebyl nalezen – OM s daným EAN neexistuje, nebo nemá výrobnu.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+          example:
+            kod: "OM_VYROBA_NOT_FOUND"
+            zprava: "K danému OM není evidována žádná výrobna."
+    Unauthorized:
+      description: Chybí nebo je neplatný Bearer token.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+          example:
+            kod: "UNAUTHORIZED"
+            zprava: "Přístup vyžaduje platný autorizační token."
+    Forbidden:
+      description: |
+        Uživatel je autentizován, ale nemá oprávnění k danému OM
+        (EAN není v jeho seznamu přístupných OM).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+          example:
+            kod: "FORBIDDEN"
+            zprava: "Uživatel nemá oprávnění k tomuto odběrnému místu."
+    ServerError:
+      description: Neočekávaná chyba na straně serveru.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+          example:
+            kod: "INTERNAL_ERROR"
+            zprava: "Došlo k neočekávané chybě. Zkuste to prosím znovu."
